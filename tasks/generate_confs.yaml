@@ -1,0 +1,101 @@
+# generate_confs generates files from service/confs to service/generated with
+# different stages variables and env variables.
+# Variables are defined at service/stage.<stage>.yaml and service/env.<env>.yaml
+
+- name: find stages
+  set_fact:
+    stages: "{{ query('fileglob', 'stage.*.yaml') | map('regex_replace', '^.*/stage\\.([^.]*)\\.yaml', '\\1') | list }}"
+
+- name: show stages
+  debug:
+    msg: "{{ item }}"
+  with_list: "{{ stages }}"
+
+- name: load stages variables
+  include_vars: 
+    file: "stage.{{ item }}.yaml"
+    name: "stage_{{ item }}"
+  with_list: "{{ stages }}"
+
+- name: check env variables exist
+  stat:
+    path: "env.{{ item }}.yaml"
+  with_list: "{{ stages }}"
+  register: "env_files"
+
+- name: load env variables by default
+  include_vars:
+    file: "env.{{ item }}.yaml"
+    name: "env_{{ item }}"
+  with_list: "{{ env_files.results | selectattr('stat.exists', 'eq', True) | map(attribute='item') | list }}"
+
+- name: load including env variables
+  include_vars:
+    file: "env.{{ vars['stage_'+item].include_env }}.yaml"
+    name: "env_{{ item }}"
+  when: "vars['stage_'+item].include_env is defined"
+  with_list: "{{ stages }}"
+
+- name: merge env to stage variables
+  set_fact:
+    "stage_{{ item }}": "{{ vars['env_'+item] | combine(vars['stage_'+item]) }}"
+  when: "vars['env_'+item] is defined"
+  with_list: "{{ stages }}"
+
+- name: clean outputs
+  file:
+    path: "generated/"
+    state: absent
+  when: "not ansible_check_mode"
+
+- name: create directories
+  file:
+    path: "generated/{{ item.0 }}/{{ item.1 | regex_replace('_stage_', item.0) }}"
+    state: directory
+    mode: 0755
+    recurse: yes
+  with_nested:
+    - "{{ stages }}"
+    - "{{ lookup('filetree', './confs') | selectattr('state', 'eq', 'directory') | map(attribute='path') | list }}"
+  when: "not ansible_check_mode"
+
+- name: create files
+  template:
+    src: "confs/{{ item.1 }}"
+    dest: "generated/{{ item.0 }}/{{ item.1 | regex_replace('_stage_', item.0) }}"
+  vars:
+    v: "{{ vars['stage_'+item.0] }}"
+  with_nested:
+    - "{{ stages }}"
+    - "{{ lookup('filetree', './confs') | selectattr('state', 'ne', 'directory') | map(attribute='path') | list }}"
+  when: "not ansible_check_mode"
+  register: created
+
+- name: check files
+  template:
+    src: "confs/{{ item.1 }}"
+    dest: "generated/{{ item.0 }}/{{ item.1 | regex_replace('_stage_', item.0) }}"
+  vars:
+    v: "{{ vars['stage_'+item.0] }}"
+  with_nested:
+    - "{{ stages }}"
+    - "{{ lookup('filetree', './confs') | selectattr('state', 'ne', 'directory') | map(attribute='path') | list }}"
+  when: "ansible_check_mode"
+  register: result
+  failed_when: result.changed or result.failed
+
+- name: check files number
+  fail:
+    msg: "generated/{{ item }} have more files than conf"
+  with_list: "{{ stages }}"
+  when:
+    - ansible_check_mode
+    - |
+      lookup('filetree', './generated/'+item) | 
+        selectattr('state', 'ne', 'directory') | 
+        map(attribute='path') | 
+        list| length != 
+      lookup('filetree', './confs') | 
+        selectattr('state', 'ne', 'directory') | 
+        map(attribute='path') | 
+        list | length

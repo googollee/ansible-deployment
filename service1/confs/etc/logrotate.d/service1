@@ -1,0 +1,12 @@
+/var/log/service1/*.log {
+	daily
+	missingok
+	rotate 5 
+	compress
+        notifempty
+	delaycompress
+        copytruncate
+	create 0640 root root
+	sharedscripts
+        su root root
+}

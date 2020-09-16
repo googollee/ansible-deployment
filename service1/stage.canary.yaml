@@ -1,0 +1,3 @@
+local_port: 8001
+lb_weight: 1
+include_env: prod
